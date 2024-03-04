@@ -26,7 +26,7 @@ import mindspore as ms
 from mindspore import load_checkpoint, load_param_into_net
 from mindspore import Tensor, ops, nn, set_seed, context
 
-from model.generator import Generator
+from model.generator import Generator, MappingNetwork
 from model.discriminator import Discriminator
 from training_dataset.dataset import Ffhq, LsunCarWide
 from loss.stylegan2_loss import CustomWithLossCell, StyleGANLoss
@@ -222,11 +222,11 @@ def train(args):
     if start_over:
         tick_start_nimg = cur_nimg
 
-    if resume_train is not None:
-        match = re.match(r'^.*(network-snapshot-)(\d+)$', resume_train, re.IGNORECASE)
-        if match:
-            cur_nimg = int(match.group(2)) * 1000
-            tick_start_nimg = cur_nimg
+    ## Resume Encapsulation Models
+    match = re.match(r'^.*(network-snapshot-)(\d+)$', resume_train, re.IGNORECASE)
+    if match:
+        cur_nimg = int(match.group(2)) * 1000
+        tick_start_nimg = cur_nimg
 
     if resume_paper is not None:
         cur_nimg = 25000000
@@ -305,11 +305,12 @@ def train(args):
     generator = Generator(z_dim=512, w_dim=512, c_dim=0,
                           img_resolution=img_res, img_channels=3, batch_size=batch_size, train=True,
                           mapping_kwargs=g_mapping_kwargs, synthesis_kwargs=g_synthesis_kwargs)
+    mappingnetwork = MappingNetwork(z_dim=512, c_dim=0, w_dim=512)
     discriminator = Discriminator(c_dim=0, img_resolution=img_res, img_channels=3, block_kwargs={},
                                   mapping_kwargs={}, epilogue_kwargs=d_epilogue_kwargs, batch_size=batch_size,
                                   channel_base=channel_base, channel_max=512, num_fp16_res=4, conv_clamp=256)
 
-    module_list = [('G', generator), ('D', discriminator), ('G_ema', generator_ema)]
+    module_list = [('G', generator), ('M', mappingnetwork) , ('D', discriminator), ('G_ema', generator_ema)]
 
     if resume_train is not None:
         for model_name, module in module_list:
@@ -321,10 +322,10 @@ def train(args):
             param_dict = load_checkpoint(os.path.join(resume_paper, model_name + '.ckpt'))
             load_param_into_net(module, param_dict)
 
-    cal_loss = CustomWithLossCell(generator.mapping, generator.synthesis, discriminator, StyleGANLoss)
+    cal_loss = CustomWithLossCell(generator.mapping, generator.synthesis, mappingnetwork, discriminator, StyleGANLoss, stylization=True)
 
     phases = []
-    for name, module, opt_kwargs, reg_interval in [('G', generator, g_opt_kwargs, g_reg_interval),
+    for name, module, opt_kwargs, reg_interval in [('G', generator, g_opt_kwargs, g_reg_interval), 
                                                    ('D', discriminator, d_opt_kwargs, d_reg_interval)]:
         mb_ratio = reg_interval / (reg_interval + 1)
         opt_kwargs['lr'] = opt_kwargs['lr'] * mb_ratio
